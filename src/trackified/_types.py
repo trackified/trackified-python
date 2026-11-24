@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
 TrackingStatus = Literal[
     "not_yet_scanned",
@@ -49,11 +49,14 @@ class TrackingInput(TypedDict, total=False):
 
 class TrackingEvent(TypedDict):
     occurred_at: Optional[str]
+    """When the scan happened. Without an offset it is the local time where the scan happened;
+    when the carrier gives an offset it is included and ``time_zone_known`` is True."""
     time_zone_known: bool
     status: EventStatus
     description: str
     location: str
-    date: Optional[str]  # deprecated: use occurred_at
+    date: Optional[str]
+    """Deprecated: use ``occurred_at``. Sent until 2027-06-01, removed after."""
 
 
 class Tracking(TypedDict, total=False):
@@ -63,6 +66,7 @@ class Tracking(TypedDict, total=False):
     carrier_detected: bool
     status: TrackingStatus
     events: List[TrackingEvent]
+    """Newest first (sorted by ``occurred_at`` desc; guaranteed by the API)."""
     estimated_delivery: Optional[str]
     delivered_at: Optional[str]
     delivered_at_time_zone_known: bool
@@ -111,6 +115,23 @@ class RetrackResult(TypedDict, total=False):
 class Carrier(TypedDict, total=False):
     id: str
     display_name: str
+    displayName: str  # deprecated spelling; the API sends both
+    aliases: List[str]
+
+
+CarrierMatch = Literal["id", "alias", "name", "provider_slug", "prefix"]
+
+
+class CarrierResolution(TypedDict):
+    carrier: str
+    name: str
+    confidence: float
+    matched: CarrierMatch
+
+
+class Health(TypedDict, total=False):
+    status: str
+    checks: Dict[str, Any]
 
 
 class CarrierList(TypedDict):
@@ -142,6 +163,10 @@ class Webhook(TypedDict, total=False):
     secret_preview: str
     secret: str  # only in the create response
     created_at: str
+
+
+class RotatedWebhook(Webhook, total=False):
+    previous_secret_expires_at: Optional[str]
 
 
 class WebhookList(TypedDict):
@@ -205,8 +230,59 @@ class Usage(TypedDict):
     carrier_volume: List[CarrierVolume]
 
 
-class WebhookEvent(TypedDict, total=False):
+class StatusChangedData(TypedDict):
+    tracking: Tracking
+    previous_status: TrackingStatus
+    current_status: TrackingStatus
+
+
+class _EventBase(TypedDict):
     id: str
-    type: WebhookEventType
-    data: Dict[str, Any]
     created_at: str
+
+
+class TrackingCreatedEvent(_EventBase):
+    type: Literal["tracking.created"]
+    data: Tracking
+
+
+class TrackingUpdatedEvent(_EventBase):
+    type: Literal["tracking.updated"]
+    data: Tracking
+
+
+class TrackingStatusChangedEvent(_EventBase):
+    type: Literal["tracking.status_changed"]
+    data: StatusChangedData
+
+
+class TrackingDeliveredEvent(_EventBase):
+    type: Literal["tracking.delivered"]
+    data: Tracking
+
+
+class TrackingExceptionEvent(_EventBase):
+    type: Literal["tracking.exception"]
+    data: Tracking
+
+
+class TrackingReturnedEvent(_EventBase):
+    type: Literal["tracking.returned"]
+    data: Tracking
+
+
+class TrackingExpiredEvent(_EventBase):
+    type: Literal["tracking.expired"]
+    data: Tracking
+
+
+# Narrow on event["type"]; use tracking_of(event) to get the Tracking from any of them.
+WebhookEvent = Union[
+    TrackingCreatedEvent,
+    TrackingUpdatedEvent,
+    TrackingStatusChangedEvent,
+    TrackingDeliveredEvent,
+    TrackingExceptionEvent,
+    TrackingReturnedEvent,
+    TrackingExpiredEvent,
+]

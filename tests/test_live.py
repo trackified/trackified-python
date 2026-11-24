@@ -17,6 +17,9 @@ pytestmark = pytest.mark.skipif(
 
 def test_live_create_get_list_delete() -> None:
     with Trackified() as client:
+        assert client.health()["status"] == "ok"
+        resolved = client.carriers.resolve("USPS Priority Mail")
+        assert resolved is not None and resolved["carrier"] == "usps"
         usage = client.usage.get()
         assert usage["plan"]
         tracking = client.trackings.create("9434650110837017316201", carrier="usps")
