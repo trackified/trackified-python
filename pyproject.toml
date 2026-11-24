@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trackified"
+dynamic = ["version"]
+description = "Official Python client for the Trackified parcel-tracking API"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Trackified" }]
+requires-python = ">=3.9"
+dependencies = ["httpx>=0.23,<1"]
+keywords = ["trackified", "parcel-tracking", "shipping", "tracking", "sdk"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://trackified.net"
+Documentation = "https://forumulate.com/p/trackified/docs"
+Source = "https://github.com/trackified/trackified-python"
+Changelog = "https://github.com/trackified/trackified-python/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.6", "build>=1"]
+
+[tool.hatch.version]
+path = "src/trackified/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trackified"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["UP006", "UP007", "UP035", "UP045"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
