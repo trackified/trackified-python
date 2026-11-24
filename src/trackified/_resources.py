@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Sequence, Union
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Sequence, Union, cast
 from urllib.parse import quote
 
 from . import _webhooks
@@ -16,10 +16,12 @@ from ._types import (
     Carrier,
     CarrierDetection,
     CarrierList,
+    CarrierResolution,
     CarrierSupport,
     CatalogResult,
     DeletedTracking,
     RetrackResult,
+    RotatedWebhook,
     Tracking,
     TrackingInput,
     TrackingList,
@@ -34,6 +36,20 @@ from ._types import (
 )
 
 Payload = Union[str, bytes]
+Secrets = _webhooks.Secrets
+
+
+def _resolution(result: Dict[str, Any]) -> Optional[CarrierResolution]:
+    return cast(CarrierResolution, result) if result.get("carrier") else None
+
+
+def _webhook_patch(
+    url: Optional[str], event_types: Optional[List[WebhookEventType]], enabled: Optional[bool]
+) -> Dict[str, Any]:
+    body = _drop_none(url=url, event_types=event_types, enabled=enabled)
+    if not body:
+        raise ValueError("webhooks.update needs at least one of url, event_types, enabled")
+    return body
 
 
 def _id(value: str) -> str:
@@ -64,20 +80,35 @@ class _WebhookVerifier:
     def verify(
         payload: Payload,
         header: str,
-        secret: str,
+        secret: Secrets,
         tolerance: float = _webhooks.DEFAULT_TOLERANCE,
     ) -> bool:
         """True when the x-tracking-signature ``header`` signs the raw ``payload``."""
         return _webhooks.verify(payload, header, secret, tolerance)
 
     @staticmethod
+    def verify_detailed(
+        payload: Payload,
+        header: str,
+        secret: Secrets,
+        tolerance: float = _webhooks.DEFAULT_TOLERANCE,
+    ) -> _webhooks.VerificationResult:
+        """Like ``verify``, with the ``reason`` when it fails."""
+        return _webhooks.verify_detailed(payload, header, secret, tolerance)
+
+    @staticmethod
+    def tracking_of(event: WebhookEvent) -> Tracking:
+        """The Tracking an event is about, whatever its type."""
+        return _webhooks.tracking_of(event)
+
+    @staticmethod
     def construct_event(
         payload: Payload,
         header: str,
-        secret: str,
+        secret: Secrets,
         tolerance: float = _webhooks.DEFAULT_TOLERANCE,
     ) -> WebhookEvent:
-        """Verify and parse a webhook event; raises WebhookVerificationError."""
+        """Verify and parse a webhook event; raises SignatureVerificationError."""
         return _webhooks.construct_event(payload, header, secret, tolerance)
 
 
@@ -230,6 +261,14 @@ class Carriers:
         result: Dict[str, Any] = self._c.request("GET", "/v1/carriers/status")
         return result
 
+    def resolve(self, name: str) -> Optional[CarrierResolution]:
+        """Map free text (a name, alias or another provider's slug) to our carrier id.
+        None when it does not resolve to a carrier we serve."""
+        result: Dict[str, Any] = self._c.request(
+            "GET", "/v1/carriers/resolve", params={"name": name}
+        )
+        return _resolution(result)
+
 
 class Webhooks(_WebhookVerifier):
     def __init__(self, client: SyncClient) -> None:
@@ -247,11 +286,37 @@ class Webhooks(_WebhookVerifier):
         )
         return result
 
+    def update(
+        self,
+        id: str,
+        *,
+        url: Optional[str] = None,
+        event_types: Optional[List[WebhookEventType]] = None,
+        enabled: Optional[bool] = None,
+    ) -> Webhook:
+        """Change a webhook; the secret stays the same. Pass at least one field."""
+        result: Webhook = self._c.request(
+            "PATCH", f"/v1/webhooks/{_id(id)}", json=_webhook_patch(url, event_types, enabled)
+        )
+        return result
+
+    def rotate_secret(self, id: str, *, expires_in_hours: Optional[int] = None) -> RotatedWebhook:
+        """New secret (shown once). The old one keeps verifying for ``expires_in_hours``
+        (API default 24, 0 drops it now)."""
+        result: RotatedWebhook = self._c.request(
+            "POST",
+            f"/v1/webhooks/{_id(id)}/rotate-secret",
+            json=_drop_none(expires_in_hours=expires_in_hours),
+        )
+        return result
+
     def delete(self, id: str) -> Dict[str, Any]:
         result: Dict[str, Any] = self._c.request("DELETE", f"/v1/webhooks/{_id(id)}")
         return result
 
     def test(self, id: str) -> WebhookTestResult:
+        """Sign a sample event with this webhook's secret and return it (``signature``, ``body``).
+        Nothing is delivered; use it to check your verification code."""
         result: WebhookTestResult = self._c.request("POST", f"/v1/webhooks/{_id(id)}/test")
         return result
 
@@ -457,6 +522,14 @@ class AsyncCarriers:
         result: Dict[str, Any] = await self._c.request("GET", "/v1/carriers/status")
         return result
 
+    async def resolve(self, name: str) -> Optional[CarrierResolution]:
+        """Map free text (a name, alias or another provider's slug) to our carrier id.
+        None when it does not resolve to a carrier we serve."""
+        result: Dict[str, Any] = await self._c.request(
+            "GET", "/v1/carriers/resolve", params={"name": name}
+        )
+        return _resolution(result)
+
 
 class AsyncWebhooks(_WebhookVerifier):
     def __init__(self, client: AsyncClient) -> None:
@@ -478,11 +551,39 @@ class AsyncWebhooks(_WebhookVerifier):
         )
         return result
 
+    async def update(
+        self,
+        id: str,
+        *,
+        url: Optional[str] = None,
+        event_types: Optional[List[WebhookEventType]] = None,
+        enabled: Optional[bool] = None,
+    ) -> Webhook:
+        """Change a webhook; the secret stays the same. Pass at least one field."""
+        result: Webhook = await self._c.request(
+            "PATCH", f"/v1/webhooks/{_id(id)}", json=_webhook_patch(url, event_types, enabled)
+        )
+        return result
+
+    async def rotate_secret(
+        self, id: str, *, expires_in_hours: Optional[int] = None
+    ) -> RotatedWebhook:
+        """New secret (shown once). The old one keeps verifying for ``expires_in_hours``
+        (API default 24, 0 drops it now)."""
+        result: RotatedWebhook = await self._c.request(
+            "POST",
+            f"/v1/webhooks/{_id(id)}/rotate-secret",
+            json=_drop_none(expires_in_hours=expires_in_hours),
+        )
+        return result
+
     async def delete(self, id: str) -> Dict[str, Any]:
         result: Dict[str, Any] = await self._c.request("DELETE", f"/v1/webhooks/{_id(id)}")
         return result
 
     async def test(self, id: str) -> WebhookTestResult:
+        """Sign a sample event with this webhook's secret and return it (``signature``, ``body``).
+        Nothing is delivered; use it to check your verification code."""
         result: WebhookTestResult = await self._c.request("POST", f"/v1/webhooks/{_id(id)}/test")
         return result
 

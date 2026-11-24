@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 
@@ -57,16 +57,39 @@ class RateLimitError(TrackifiedError):
         self.retry_after = retry_after
 
 
+class QuotaExceededError(TrackifiedError):
+    """402 ``quota_exceeded``: the plan's tracking quota is used up."""
+
+
+class ConflictError(TrackifiedError):
+    """409, e.g. ``idempotency_in_progress``: a request with this key is still running."""
+
+
 class APIError(TrackifiedError):
     """5xx: the server failed."""
 
 
 class ConnectionError(TrackifiedError):  # noqa: A001
-    """The request never got a response (DNS, refused, timeout, ...)."""
+    """The request never got a response. ``code`` is ``"timeout"`` or ``"connection"``.
+
+    After a timeout the outcome is unknown: the server may have done the work. Retry with the
+    same idempotency key (the client does this automatically for creates)."""
 
 
-class WebhookVerificationError(TrackifiedError):
-    """A webhook signature header was missing, malformed, stale or wrong."""
+VerificationReason = Literal["missing", "malformed", "timestamp", "mismatch"]
+
+
+class SignatureVerificationError(TrackifiedError):
+    """A webhook signature was rejected. ``reason`` says why:
+    ``missing``, ``malformed``, ``timestamp`` or ``mismatch``."""
+
+    def __init__(self, message: str, *, reason: VerificationReason, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.reason: VerificationReason = reason
+
+
+# 0.1 name, kept so existing ``except WebhookVerificationError`` code keeps working.
+WebhookVerificationError = SignatureVerificationError
 
 
 def parse_retry_after(response: httpx.Response) -> Optional[float]:
@@ -96,10 +119,14 @@ def error_from_response(response: httpx.Response) -> TrackifiedError:
     kwargs: Any = {"status": status, "code": code, "request_id": request_id}
     if status == 401:
         return AuthenticationError(message, **kwargs)
+    if status == 402:
+        return QuotaExceededError(message, **kwargs)
     if status == 403:
         return PermissionError(message, **kwargs)
     if status == 404:
         return NotFoundError(message, **kwargs)
+    if status == 409:
+        return ConflictError(message, **kwargs)
     if status in (400, 422):
         return ValidationError(message, **kwargs)
     if status == 429:

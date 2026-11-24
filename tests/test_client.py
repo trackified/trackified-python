@@ -27,7 +27,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> List[float]:
 
 def make(handler: Callable[[httpx.Request], httpx.Response], **kw: Any) -> Trackified:
     return Trackified(
-        "tk_test_abc", http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kw
+        "test_abc", http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kw
     )
 
 
@@ -48,7 +48,7 @@ def test_auth_headers_and_create() -> None:
     req = seen[0]
     assert req.method == "POST"
     assert str(req.url) == "https://api.trackified.net/v1/trackings"
-    assert req.headers["authorization"] == "Bearer tk_test_abc"
+    assert req.headers["authorization"] == "Bearer test_abc"
     assert req.headers["user-agent"] == f"trackified-python/{trackified.__version__}"
     assert len(req.headers["idempotency-key"]) == 36
     assert json.loads(req.content) == {
@@ -82,6 +82,10 @@ def test_idempotency_key_reused_across_retries(no_sleep: List[float]) -> None:
     keys.clear()
     make(handler).trackings.create_bulk([{"tracking_number": "1"}], idempotency_key="mine")
     assert keys == ["mine"] * 3
+
+    keys.clear()
+    make(handler).trackings.create_bulk([{"tracking_number": "1"}])
+    assert len(keys) == 3 and len(set(keys)) == 1 and len(keys[0]) == 36
 
 
 def test_retry_after_honoured(no_sleep: List[float]) -> None:
@@ -134,8 +138,108 @@ def test_connection_error() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")
 
-    with pytest.raises(trackified.ConnectionError):
+    with pytest.raises(trackified.ConnectionError) as e:
         make(handler, max_retries=0).usage.get()
+    assert e.value.code == "connection"
+
+    def timeout(req: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow")
+
+    with pytest.raises(trackified.ConnectionError) as e:
+        make(timeout, max_retries=0).usage.get()
+    assert e.value.code == "timeout"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.trackified.net",
+        "https://api.trackified.net/",
+        "https://api.trackified.net/v1",
+        "https://api.trackified.net/v1/",
+    ],
+)
+def test_base_url_with_or_without_v1(base_url: str) -> None:
+    seen: List[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(str(req.url))
+        return httpx.Response(200, json={"status": "ok"})
+
+    assert make(handler, base_url=base_url).health() == {"status": "ok"}
+    assert seen == ["https://api.trackified.net/v1/health"]
+
+
+def test_hooks_called_per_attempt_and_errors_swallowed() -> None:
+    requests: List[trackified.RequestInfo] = []
+    responses: List[trackified.ResponseInfo] = []
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ConnectError("boom")
+        if len(calls) == 2:
+            return err(503)
+        return httpx.Response(
+            201, json=TRACKING, headers={"x-request-id": "req_9", "idempotent-replayed": "true"}
+        )
+
+    def on_request(info: trackified.RequestInfo) -> None:
+        requests.append(info)
+        raise RuntimeError("hook bug")
+
+    def on_response(info: trackified.ResponseInfo) -> None:
+        responses.append(info)
+        raise RuntimeError("hook bug")
+
+    c = make(handler, on_request=on_request, on_response=on_response)
+    assert c.trackings.create("1", idempotency_key="k1")["id"] == "trk_1"
+    assert [r["attempt"] for r in requests] == [1, 2, 3]
+    assert requests[0] == {
+        "method": "POST",
+        "url": "https://api.trackified.net/v1/trackings",
+        "attempt": 1,
+        "idempotency_key": "k1",
+    }
+    assert [r["status"] for r in responses] == [None, 503, 201]
+    first_error = responses[0]["error"]
+    assert isinstance(first_error, trackified.ConnectionError)
+    assert first_error.code == "connection"
+    assert isinstance(responses[1]["error"], trackified.APIError)
+    assert responses[1]["request_id"] == "req_1"  # from the error body
+    last = responses[2]
+    assert last["error"] is None and last["request_id"] == "req_9"
+    assert last["idempotent_replayed"] is True and last["duration_ms"] >= 0
+
+
+def test_resolve() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.params["name"] == "USPS Priority Mail":
+            body = {"carrier": "usps", "name": "USPS", "confidence": 0.97, "matched": "alias"}
+            return httpx.Response(200, json=body)
+        return httpx.Response(200, json={"carrier": None, "confidence": 0})
+
+    c = make(handler)
+    resolved = c.carriers.resolve("USPS Priority Mail")
+    assert resolved is not None and resolved["carrier"] == "usps"
+    assert c.carriers.resolve("Nope Post") is None
+
+
+def test_webhook_update_and_rotate_bodies() -> None:
+    bodies: List[Any] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"id": "wh_1"})
+
+    c = make(handler)
+    c.webhooks.update("wh_1", enabled=False)
+    c.webhooks.rotate_secret("wh_1", expires_in_hours=0)
+    c.webhooks.rotate_secret("wh_1")
+    assert bodies == [{"enabled": False}, {"expires_in_hours": 0}, {}]
+    with pytest.raises(ValueError):
+        c.webhooks.update("wh_1")
 
 
 @pytest.mark.parametrize(
@@ -143,10 +247,10 @@ def test_connection_error() -> None:
     [
         (400, trackified.ValidationError),
         (401, trackified.AuthenticationError),
-        (402, trackified.TrackifiedError),
+        (402, trackified.QuotaExceededError),
         (403, trackified.PermissionError),
         (404, trackified.NotFoundError),
-        (409, trackified.TrackifiedError),
+        (409, trackified.ConflictError),
         (422, trackified.ValidationError),
         (500, trackified.APIError),
     ],
@@ -208,8 +312,11 @@ def test_every_operation_hits_the_right_route() -> None:
     c.carriers.detect("1Z999")
     c.carriers.catalog(q="dhl", support="api")
     c.carriers.validation_status()
+    c.carriers.resolve("dhl_express")
     c.webhooks.create("https://example.com/h", event_types=["tracking.delivered"])
     c.webhooks.list()
+    c.webhooks.update("wh_1", url="https://example.com/h2")
+    c.webhooks.rotate_secret("wh_1", expires_in_hours=1)
     c.webhooks.delete("wh_1")
     c.webhooks.test("wh_1")
     c.webhook_deliveries.list(offset=5)
@@ -217,6 +324,7 @@ def test_every_operation_hits_the_right_route() -> None:
     c.api_keys.list()
     c.api_keys.revoke("key_1")
     c.usage.get()
+    c.health()
     assert seen == [
         "POST /v1/trackings",
         "GET /v1/trackings?limit=10&carrier=usps",
@@ -230,8 +338,11 @@ def test_every_operation_hits_the_right_route() -> None:
         "GET /v1/carriers/detect?number=1Z999",
         "GET /v1/carriers/catalog?q=dhl&support=api",
         "GET /v1/carriers/status",
+        "GET /v1/carriers/resolve?name=dhl_express",
         "POST /v1/webhooks",
         "GET /v1/webhooks",
+        "PATCH /v1/webhooks/wh_1",
+        "POST /v1/webhooks/wh_1/rotate-secret",
         "DELETE /v1/webhooks/wh_1",
         "POST /v1/webhooks/wh_1/test",
         "GET /v1/webhook-deliveries?offset=5",
@@ -239,6 +350,7 @@ def test_every_operation_hits_the_right_route() -> None:
         "GET /v1/account/api-keys",
         "DELETE /v1/account/api-keys/key_1",
         "GET /v1/account/usage",
+        "GET /v1/health",
     ]
 
 
@@ -247,11 +359,17 @@ def test_async_client() -> None:
     items = [{"id": f"trk_{i}"} for i in range(3)]
 
     def handler(req: httpx.Request) -> httpx.Response:
-        if req.method == "POST":
+        if req.method == "POST" and req.url.path == "/v1/trackings":
             keys.append(req.headers["idempotency-key"])
             return err(500) if len(keys) == 1 else httpx.Response(201, json=TRACKING)
         if req.url.path == "/v1/trackings/missing":
             return err(404)
+        if req.url.path == "/v1/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if req.url.path == "/v1/carriers/resolve":
+            return httpx.Response(200, json={"carrier": None, "confidence": 0})
+        if req.method == "PATCH" or req.url.path.endswith("/rotate-secret"):
+            return httpx.Response(200, json={"id": "wh_1", "previous_secret_expires_at": None})
         offset = int(req.url.params["offset"])
         return httpx.Response(
             200, json={"data": items[offset : offset + 2], "pagination": {"total": 3}}
@@ -259,7 +377,13 @@ def test_async_client() -> None:
 
     async def run() -> None:
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        async with AsyncTrackified("tk_test_abc", http_client=http) as c:
+        attempts: List[int] = []
+        async with AsyncTrackified(
+            "test_abc",
+            base_url="https://api.trackified.net/v1/",
+            http_client=http,
+            on_response=lambda info: attempts.append(info["attempt"]),
+        ) as c:
             t = await c.trackings.create("1")
             assert t["id"] == "trk_1"
             assert len(keys) == 2 and keys[0] == keys[1]
@@ -268,5 +392,11 @@ def test_async_client() -> None:
             with pytest.raises(trackified.NotFoundError):
                 await c.trackings.get("missing")
             assert c.webhooks.verify("{}", "bad", "s") is False
+            assert c.webhooks.verify_detailed("{}", "bad", "s").reason == "malformed"
+            assert attempts[:2] == [1, 2]
+            assert await c.health() == {"status": "ok"}
+            assert await c.carriers.resolve("nope") is None
+            assert (await c.webhooks.update("wh_1", enabled=True))["id"] == "wh_1"
+            assert (await c.webhooks.rotate_secret("wh_1"))["previous_secret_expires_at"] is None
 
     asyncio.run(run())

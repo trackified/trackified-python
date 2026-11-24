@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 import trackified
@@ -66,3 +68,72 @@ def test_malformed_header(header: str) -> None:
     assert not trackified.verify(BODY, header, SECRET)
     with pytest.raises(WebhookVerificationError):
         trackified.construct_event(BODY, header, SECRET)
+
+
+SECRET_B = "whsec_trackified_test_vector_b"
+SIG_B = "aaa4b846892609125e20b07a531d46e9e4614d8eec8d6dd3ecccae877b58111f"
+DUAL_HEADER = f"t={T},v1={SIG_B},v1={SIG}"
+
+
+def test_dual_signature_vector() -> None:
+    # Only the second v1 matches secret A; only the first matches B.
+    assert trackified.verify(BODY, DUAL_HEADER, SECRET)
+    assert trackified.verify(BODY, DUAL_HEADER, SECRET_B)
+    assert trackified.verify(BODY, DUAL_HEADER, [SECRET, SECRET_B])
+    assert trackified.verify(BODY, HEADER, [SECRET_B, SECRET])
+    assert not trackified.verify(BODY, f"t={T},v1={SIG_B}", SECRET)
+    assert trackified.construct_event(BODY, DUAL_HEADER, [SECRET_B])["id"] == "evt_test"
+
+
+@pytest.mark.parametrize(
+    "header,secret,reason",
+    [
+        ("", SECRET, "missing"),
+        (HEADER, "", "missing"),
+        (HEADER, [], "missing"),
+        ("garbage", SECRET, "malformed"),
+        (f"v1={SIG}", SECRET, "malformed"),
+        (f"t={T}", SECRET, "malformed"),
+        (f"t=abc,v1={SIG}", SECRET, "malformed"),
+        (f"t={T},v1=zz", SECRET, "malformed"),
+        (f"t={T},v1=abc", SECRET, "malformed"),
+        (f"t={T - 301},v1={SIG}", SECRET, "timestamp"),
+        (HEADER, "whsec_other", "mismatch"),
+    ],
+)
+def test_reasons(header: str, secret: Any, reason: str) -> None:
+    result = trackified.verify_detailed(BODY, header, secret)
+    assert result == trackified.VerificationResult(False, reason)  # type: ignore[arg-type]
+    assert not trackified.verify(BODY, header, secret)
+    with pytest.raises(trackified.SignatureVerificationError) as e:
+        trackified.construct_event(BODY, header, secret)
+    assert e.value.reason == reason
+    assert isinstance(e.value, WebhookVerificationError)
+
+
+def test_verify_detailed_valid() -> None:
+    assert Trackified(api_key="k").webhooks.verify_detailed(BODY, HEADER, SECRET) == (
+        trackified.VerificationResult(True, None)
+    )
+
+
+def test_tracking_of() -> None:
+    tracking: trackified.Tracking = {"id": "trk_1"}
+    changed: trackified.TrackingStatusChangedEvent = {
+        "id": "evt_1",
+        "type": "tracking.status_changed",
+        "created_at": "2026-01-01T00:00:00Z",
+        "data": {
+            "tracking": tracking,
+            "previous_status": "in_transit",
+            "current_status": "delivered",
+        },
+    }
+    delivered: trackified.TrackingDeliveredEvent = {
+        "id": "evt_2",
+        "type": "tracking.delivered",
+        "created_at": "2026-01-01T00:00:00Z",
+        "data": tracking,
+    }
+    assert trackified.tracking_of(changed) is tracking
+    assert Trackified(api_key="k").webhooks.tracking_of(delivered) is tracking
