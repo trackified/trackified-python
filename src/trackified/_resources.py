@@ -315,6 +315,8 @@ class Webhooks(_WebhookVerifier):
         return result
 
     def test(self, id: str) -> WebhookTestResult:
+        """Sign a sample event with this webhook's secret and return it (``signature``, ``body``).
+        Nothing is delivered; use it to check your verification code."""
         result: WebhookTestResult = self._c.request("POST", f"/v1/webhooks/{_id(id)}/test")
         return result
 
@@ -580,6 +582,8 @@ class AsyncWebhooks(_WebhookVerifier):
         return result
 
     async def test(self, id: str) -> WebhookTestResult:
+        """Sign a sample event with this webhook's secret and return it (``signature``, ``body``).
+        Nothing is delivered; use it to check your verification code."""
         result: WebhookTestResult = await self._c.request("POST", f"/v1/webhooks/{_id(id)}/test")
         return result
 

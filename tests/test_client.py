@@ -27,7 +27,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> List[float]:
 
 def make(handler: Callable[[httpx.Request], httpx.Response], **kw: Any) -> Trackified:
     return Trackified(
-        "tk_test_abc", http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kw
+        "test_abc", http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kw
     )
 
 
@@ -48,7 +48,7 @@ def test_auth_headers_and_create() -> None:
     req = seen[0]
     assert req.method == "POST"
     assert str(req.url) == "https://api.trackified.net/v1/trackings"
-    assert req.headers["authorization"] == "Bearer tk_test_abc"
+    assert req.headers["authorization"] == "Bearer test_abc"
     assert req.headers["user-agent"] == f"trackified-python/{trackified.__version__}"
     assert len(req.headers["idempotency-key"]) == 36
     assert json.loads(req.content) == {
@@ -82,6 +82,10 @@ def test_idempotency_key_reused_across_retries(no_sleep: List[float]) -> None:
     keys.clear()
     make(handler).trackings.create_bulk([{"tracking_number": "1"}], idempotency_key="mine")
     assert keys == ["mine"] * 3
+
+    keys.clear()
+    make(handler).trackings.create_bulk([{"tracking_number": "1"}])
+    assert len(keys) == 3 and len(set(keys)) == 1 and len(keys[0]) == 36
 
 
 def test_retry_after_honoured(no_sleep: List[float]) -> None:
@@ -375,7 +379,7 @@ def test_async_client() -> None:
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         attempts: List[int] = []
         async with AsyncTrackified(
-            "tk_test_abc",
+            "test_abc",
             base_url="https://api.trackified.net/v1/",
             http_client=http,
             on_response=lambda info: attempts.append(info["attempt"]),

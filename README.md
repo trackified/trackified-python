@@ -196,7 +196,7 @@ client = Trackified(on_request=lambda i: print("->", i["url"]), on_response=log)
 `attempt` starts at 1. Exceptions raised by a hook are caught and ignored.
 
 Network errors, 408, 429 and 5xx responses are retried with exponential backoff and jitter
-(429 waits for `Retry-After`). Other 4xx are never retried. Tracking creates send an
+(429 waits for `Retry-After`). Other 4xx are never retried. Tracking creates (single and bulk) send an
 `Idempotency-Key` (a fresh UUID, or `idempotency_key=` if you pass one) that stays the same across
 retries, so a retried create never makes a duplicate.
 

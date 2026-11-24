@@ -15,6 +15,8 @@ All additive; 0.1 code keeps working.
 - T-10: a signature header with several `v1=` values verifies if any matches; `secret` may be a list of secrets. New `webhooks.rotate_secret(id, expires_in_hours=)`.
 - T-11: `webhooks.update(id, url=, event_types=, enabled=)`.
 - T-12: `QuotaExceededError` (402) and `ConflictError` (409, not retried). `ConnectionError.code` is `"timeout"` or `"connection"`.
+- Bulk create sends one auto-generated `Idempotency-Key` per call, reused across retries (as single create; now documented and tested).
+- `webhooks.test` docstring: it signs and returns a sample, it does not deliver.
 - T-13: `on_request` / `on_response` hooks, called once per attempt with `RequestInfo` / `ResponseInfo`; exceptions they raise are ignored.
 
 ## 0.1.0 (2026-11-24)
